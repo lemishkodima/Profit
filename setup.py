@@ -22,6 +22,9 @@ async def approve_request(chat_join: ChatJoinRequest, bot: Bot):
     start_button = KeyboardButton(text='Start')
     markup = ReplyKeyboardMarkup(keyboard=[[start_button]], resize_keyboard=True, one_time_keyboard=True)
     await bot.send_message(chat_id=chat_join.from_user.id, text=start_msg, reply_markup=markup)
+    await chat_join.approve()
+
+
 
 
     
