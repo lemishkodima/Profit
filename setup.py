@@ -30,8 +30,8 @@ async def approve_request(chat_join: ChatJoinRequest, bot: Bot):
     
 @dp.message(F.text.lower() == "start")
 async def send_channel_link(message: types.Message):
-        msg = "Ваша заявка одобрена!\n\nВступить в канал: https://t.me/+OjtvSi8Mcj40ZTAy"
-        button = InlineKeyboardButton(text='ВСТУПИТЬ', url='https://t.me/+OjtvSi8Mcj40ZTAy')
+        msg = "Ваша заявка одобрена!\n\nВступить в канал: https://t.me/+-tpbJorwJcg2OWVi"
+        button = InlineKeyboardButton(text='ВСТУПИТЬ', url='https://t.me/+-tpbJorwJcg2OWVi')
         markup = InlineKeyboardMarkup(inline_keyboard=[[button]])
 
         user_data = [message.from_user.id, message.from_user.username, message.from_user.first_name]
