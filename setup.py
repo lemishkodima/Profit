@@ -1,11 +1,17 @@
 import contextlib
 import asyncio
-from aiogram.types import CallbackQuery, ChatJoinRequest, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
+from aiogram.types import (
+    CallbackQuery, ChatJoinRequest, InlineKeyboardButton, 
+    InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, FSInputFile
+)
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters.command import Command
 import logging
 from googleapiclient.discovery import build
 from google.oauth2.service_account import Credentials
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.context import FSMContext
+import csv
 
 
 
@@ -16,6 +22,10 @@ ADMIN_ID = 1889004772
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
+
+class Form(StatesGroup):
+    Broadcast = State()  # Состояние для рассылки
+
 async def approve_request(chat_join: ChatJoinRequest, bot: Bot):
     await bot.approve_chat_join_request(chat_join.chat.id, chat_join.from_user.id)
     start_msg = "Ваша заявка одобрена, для получения ссылки нажмите Start⬇️"
@@ -25,6 +35,69 @@ async def approve_request(chat_join: ChatJoinRequest, bot: Bot):
     await chat_join.approve()
 
 
+@dp.message(Command("broadcast"))
+async def cmd_broadcast(message: types.Message, state: FSMContext):
+    """Команда /broadcast — лише для адмінів. Перехід у стан для вводу тексту розсилки."""
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("У вас нет разрешения использовать эту команду.")
+        return
+    await state.set_state(Form.Broadcast)
+    await message.answer("Введите текст для рассылки.")
+
+@dp.message(Form.Broadcast)
+async def process_broadcast(message: types.Message, state: FSMContext):
+    """Обробляє введений текст і виконує розсилку всім з бази (Google Sheets)."""
+    # Зчитування тексту розсилки
+    broadcast_text = message.text
+    # Вихід зі стану розсилки
+    await state.clear()
+
+    # Зчитування всіх користувачів з Google Sheets
+    creds = Credentials.from_service_account_file("maxim.json")
+    service = build('sheets', 'v4', credentials=creds)
+    sheet = service.spreadsheets()
+    result = sheet.values().get(
+        spreadsheetId="1eam-jcAWOC54U6hoZmtmBcG4v7rzy--NtTHoZdDxLHA",
+        range="one!A:C"
+    ).execute()
+    users = result.get('values', [])
+
+    # Список з результатами для CSV
+    results = []
+
+    for index, user in enumerate(users, start=2):
+        try:
+            user_id = user[0]
+            # Надсилаємо повідомлення кожному
+            sent_msg = await bot.send_message(chat_id=user_id, text=broadcast_text, disable_web_page_preview=True)
+
+            # Зберігаємо user_id, message_id та статус успішної відправки
+            results.append({
+                'Index': index,
+                'User ID': user_id,
+                'Message ID': sent_msg.message_id,
+                'Status': 'True'
+            })
+        except Exception as e:
+            # Якщо виникає помилка, запишемо статус False та message_id = None
+            results.append({
+                'Index': index,
+                'User ID': user[0],
+                'Message ID': None,
+                'Status': 'False'
+            })
+            logging.error(f"Не удалось отправить сообщение пользователю {user[0]}: {e}")
+
+    # Збереження результатів у файл
+    file_path = 'broadcast_results.csv'
+    await save_results_to_csv(results, file_path)
+    
+    # Відправка файлу з результатами адміністратору (або тому, хто запустив /broadcast)
+    document = FSInputFile(file_path)
+    await message.answer_document(
+        document,
+        caption="Рассылка завершена. Результаты сохранены в broadcast_results.csv"
+    )
 
 
     
