@@ -102,7 +102,7 @@ async def process_broadcast(message: types.Message, state: FSMContext):
     )
 
 
-    
+
 @dp.message(F.text.lower() == "start")
 async def send_channel_link(message: types.Message):
         msg = "Ваша заявка одобрена!\n\nВступить в канал: https://t.me/+-tpbJorwJcg2OWVi"
@@ -113,6 +113,16 @@ async def send_channel_link(message: types.Message):
         append_data_to_sheet(user_data, "1eam-jcAWOC54U6hoZmtmBcG4v7rzy--NtTHoZdDxLHA", "A:C")
 
         await message.answer(text=msg, reply_markup=markup, disable_web_page_preview=True)
+    
+    
+async def save_results_to_csv(results, file_path):
+    """Зберігає результати розсилки у CSV-файл."""
+    with open(file_path, 'w', newline='', encoding='utf-8') as csvfile:
+        fieldnames = ['Index', 'User ID', 'Message ID', 'Status']
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+        for result in results:
+            writer.writerow(result)
 
 def append_data_to_sheet(user_data, spreadsheet_id, range_name):
     """Добавляет данные пользователя в Google таблицу."""
