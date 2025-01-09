@@ -60,7 +60,7 @@ async def process_broadcast(message: types.Message, state: FSMContext):
     sheet = service.spreadsheets()
     result = sheet.values().get(
         spreadsheetId="1eam-jcAWOC54U6hoZmtmBcG4v7rzy--NtTHoZdDxLHA",
-        range="one!A:C"
+        range="two!A:C"
     ).execute()
     users = result.get('values', [])
 
