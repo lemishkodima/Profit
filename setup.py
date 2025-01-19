@@ -29,7 +29,6 @@ class Form(StatesGroup):
     Broadcast = State()  # Состояние для рассылки
 
 async def approve_request(chat_join: ChatJoinRequest, bot: Bot):
-    await bot.approve_chat_join_request(chat_join.chat.id, chat_join.from_user.id)
     start_msg = "Ваша заявка одобрена, для получения ссылки нажмите Start⬇️"
     start_button = KeyboardButton(text='Start')
     markup = ReplyKeyboardMarkup(keyboard=[[start_button]], resize_keyboard=True, one_time_keyboard=True)
