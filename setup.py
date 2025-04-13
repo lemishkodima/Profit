@@ -59,7 +59,7 @@ async def process_broadcast(message: types.Message, state: FSMContext):
     sheet = service.spreadsheets()
     result = sheet.values().get(
         spreadsheetId="1eam-jcAWOC54U6hoZmtmBcG4v7rzy--NtTHoZdDxLHA",
-        range="two!A:C"
+        range="two2!A:C"
     ).execute()
     users = result.get('values', [])
 
@@ -70,7 +70,7 @@ async def process_broadcast(message: types.Message, state: FSMContext):
         try:
             user_id = user[0]
             # Надсилаємо повідомлення кожному
-            sent_msg = await bot.send_message(chat_id=user_id, text=broadcast_text, disable_web_page_preview=True)
+            sent_msg = await bot.send_message(chat_id=user_id, text=broadcast_text, disable_web_page_preview=True, parse_mode='HTML')
 
             # Зберігаємо user_id, message_id та статус успішної відправки
             results.append({
