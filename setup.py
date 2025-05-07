@@ -104,8 +104,8 @@ async def process_broadcast(message: types.Message, state: FSMContext):
 
 @dp.message(F.text.lower() == "start")
 async def send_channel_link(message: types.Message):
-        msg = "Ваша заявка одобрена!\n\nВступить в канал: https://t.me/+-tpbJorwJcg2OWVi"
-        button = InlineKeyboardButton(text='ВСТУПИТЬ', url='https://t.me/+-tpbJorwJcg2OWVi')
+        msg = "Ваша заявка одобрена!\n\nВступить в канал: https://t.me/+4ia_jp8_1kAwNWFi"
+        button = InlineKeyboardButton(text='ВСТУПИТЬ', url='https://t.me/+4ia_jp8_1kAwNWFi')
         markup = InlineKeyboardMarkup(inline_keyboard=[[button]])
 
         user_data = [message.from_user.id, message.from_user.username, message.from_user.first_name]
