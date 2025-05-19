@@ -47,13 +47,11 @@ async def cmd_broadcast(message: types.Message, state: FSMContext):
 
 @dp.message(Form.Broadcast)
 async def process_broadcast(message: types.Message, state: FSMContext):
-    """Обробляє введений текст і виконує розсилку всім з бази (Google Sheets)."""
-    # Зчитування тексту розсилки
+    """Обробляє введений текст і виконує розсилку всім з бази з персоналізацією."""
     broadcast_text = message.text
-    # Вихід зі стану розсилки
     await state.clear()
 
-    # Зчитування всіх користувачів з Google Sheets
+    # Завантажуємо користувачів з Google Sheets (стовпці A: user_id, B: username, C: first_name)
     creds = Credentials.from_service_account_file("maxim.json")
     service = build('sheets', 'v4', credentials=creds)
     sheet = service.spreadsheets()
@@ -63,37 +61,55 @@ async def process_broadcast(message: types.Message, state: FSMContext):
     ).execute()
     users = result.get('values', [])
 
-    # Список з результатами для CSV
     results = []
 
     for index, user in enumerate(users, start=2):
-        try:
-            user_id = user[0]
-            # Надсилаємо повідомлення кожному
-            sent_msg = await bot.send_message(chat_id=user_id, text=broadcast_text, disable_web_page_preview=True, parse_mode='HTML')
+        user_id = user[0]
 
-            # Зберігаємо user_id, message_id та статус успішної відправки
+        # Витягуємо зі строк рядка зі списку
+        username    = user[1] if len(user) > 1 and user[1] else None
+        first_name  = user[2] if len(user) > 2 and user[2] else None
+
+        # Якщо first_name відсутнє — пробуємо отримати last_name через get_chat()
+        last_name = None
+        if not first_name:
+            try:
+                chat = await bot.get_chat(chat_id=int(user_id))
+                last_name = chat.last_name
+            except Exception:
+                pass
+
+        # Визначаємо, на що замінювати {{firstName}}
+        name_to_insert = first_name or last_name or username or ""
+
+        # Персоналізуємо текст (якщо плейсхолдера немає — replace нічого не міняє)
+        personalized_text = broadcast_text.replace("{{firstName}}", name_to_insert)
+
+        try:
+            sent_msg = await bot.send_message(
+                chat_id=user_id,
+                text=personalized_text,
+                parse_mode='HTML',
+                disable_web_page_preview=True
+            )
             results.append({
-                'Index': index,
-                'User ID': user_id,
+                'Index':     index,
+                'User ID':   user_id,
                 'Message ID': sent_msg.message_id,
-                'Status': 'True'
+                'Status':    'True'
             })
         except Exception as e:
-            # Якщо виникає помилка, запишемо статус False та message_id = None
+            logging.error(f"Не вдалося відправити повідомлення користувачу {user_id}: {e}")
             results.append({
-                'Index': index,
-                'User ID': user[0],
+                'Index':     index,
+                'User ID':   user_id,
                 'Message ID': None,
-                'Status': 'False'
+                'Status':    'False'
             })
-            logging.error(f"Не удалось отправить сообщение пользователю {user[0]}: {e}")
 
-    # Збереження результатів у файл
+    # Зберігаємо результати у CSV та відправляємо адміну
     file_path = 'broadcast_results.csv'
     await save_results_to_csv(results, file_path)
-    
-    # Відправка файлу з результатами адміністратору (або тому, хто запустив /broadcast)
     document = FSInputFile(file_path)
     await message.answer_document(
         document,
