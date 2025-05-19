@@ -1,175 +1,207 @@
 import contextlib
 import asyncio
-from aiogram.types import (
-    CallbackQuery, ChatJoinRequest, InlineKeyboardButton, 
-    InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, FSInputFile
-)
-from aiogram import Bot, Dispatcher, F, types
-from aiogram.filters.command import Command
 import logging
-from googleapiclient.discovery import build
-from google.oauth2.service_account import Credentials
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.context import FSMContext
 import csv
 
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters.command import Command
+from aiogram.types import (
+    CallbackQuery,
+    ChatJoinRequest,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+    FSInputFile,
+)
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.context import FSMContext
+
+from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
 
 
-BOT_TOKEN = '6524445610:AAFyCvTHI9qpKajyXzNVTNP3GCPM9jWVvZ0' 
-CHANNEL_ID =  -1001517003300
-ADMIN_ID = 402152266
+# Токен вашого бота та ідентифікатор каналу й адміністраторів
+BOT_TOKEN = '6524445610:AAFyCvTHI9qpKajyXzNVTNP3GCPM9jWVvZ0'
+CHANNEL_ID = -1001517003300
+ADMINISTRATOR_IDS = [402152266, 430692329]
 
-ADMIN_IDS = [402152266, 430692329]
+# Ідентифікатори Google Sheets
+SPREADSHEET_ID = "1eam-jcAWOC54U6hoZmtmBcG4v7rzy--NtTHoZdDxLHA"
+USER_DATA_RANGE = "two!A:B"  # стовпці A: User ID, B: First Name
 
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()
+
+# Ініціалізація бота та диспетчера
+telegram_bot = Bot(token=BOT_TOKEN)
+dispatcher = Dispatcher()
 
 
-class Form(StatesGroup):
-    Broadcast = State()  # Состояние для рассылки
+class BroadcastForm(StatesGroup):
+    """FSM для введення тексту розсилки."""
+    waiting_for_message_text = State()
 
-async def approve_request(chat_join: ChatJoinRequest, bot: Bot):
-    start_msg = "Ваша заявка одобрена, для получения ссылки нажмите Start⬇️"
+
+async def handle_chat_join_request(request: ChatJoinRequest, bot: Bot):
+    """Автоматичне підтвердження заявки в канал та відправка кнопки Start."""
+    welcome_text = "Ваша заявка одобрена, для получения ссылки нажмите Start⬇️"
     start_button = KeyboardButton(text='Start')
-    markup = ReplyKeyboardMarkup(keyboard=[[start_button]], resize_keyboard=True, one_time_keyboard=True)
-    await bot.send_message(chat_id=chat_join.from_user.id, text=start_msg, reply_markup=markup)
-    await chat_join.approve()
+    keyboard = ReplyKeyboardMarkup(
+        keyboard=[[start_button]],
+        resize_keyboard=True,
+        one_time_keyboard=True
+    )
+    await bot.send_message(
+        chat_id=request.from_user.id,
+        text=welcome_text,
+        reply_markup=keyboard
+    )
+    await request.approve()
 
 
-@dp.message(Command("broadcast"))
-async def cmd_broadcast(message: types.Message, state: FSMContext):
-    """Команда /broadcast — лише для адмінів. Перехід у стан для вводу тексту розсилки."""
-    if message.from_user.id not in ADMIN_IDS:
+@dispatcher.message(Command("broadcast"))
+async def command_broadcast(message: types.Message, state: FSMContext):
+    """Команда /broadcast — лише для адміністраторів."""
+    user_id = message.from_user.id
+    if user_id not in ADMINISTRATOR_IDS:
         await message.answer("У вас нет разрешения использовать эту команду.")
         return
-    await state.set_state(Form.Broadcast)
+
+    await state.set_state(BroadcastForm.waiting_for_message_text)
     await message.answer("Введите текст для рассылки.")
 
-@dp.message(Form.Broadcast)
-async def process_broadcast(message: types.Message, state: FSMContext):
-    """Обробляє введений текст і виконує розсилку всім з бази з персоналізацією."""
-    broadcast_text = message.text
+
+@dispatcher.message(BroadcastForm.waiting_for_message_text)
+async def process_broadcast_message(message: types.Message, state: FSMContext):
+    """Обробляє текст розсилки та надсилає кожному користувачу з таблиці."""
+    broadcast_template = message.text
     await state.clear()
 
-    # Завантажуємо користувачів з Google Sheets (стовпці A: user_id, B: username, C: first_name)
-    creds = Credentials.from_service_account_file("maxim.json")
-    service = build('sheets', 'v4', credentials=creds)
-    sheet = service.spreadsheets()
-    result = sheet.values().get(
-        spreadsheetId="1eam-jcAWOC54U6hoZmtmBcG4v7rzy--NtTHoZdDxLHA",
-        range="two!A:C"
+    # Підключення до Google Sheets
+    credentials = Credentials.from_service_account_file("maxim.json")
+    sheets_service = build('sheets', 'v4', credentials=credentials).spreadsheets()
+    sheet_values = sheets_service.values().get(
+        spreadsheetId=SPREADSHEET_ID,
+        range=USER_DATA_RANGE
     ).execute()
-    users = result.get('values', [])
+    users_data = sheet_values.get('values', [])
 
-    results = []
+    send_results = []
 
-    for index, user in enumerate(users, start=2):
-        user_id = user[0]
+    for row_index, row in enumerate(users_data, start=2):
+        telegram_id = row[0]
+        first_name = row[1] if len(row) > 1 and row[1].strip() else None
 
-        # Витягуємо зі строк рядка зі списку
-        username    = user[1] if len(user) > 1 and user[1] else None
-        first_name  = user[2] if len(user) > 2 and user[2] else None
-
-        # Якщо first_name відсутнє — пробуємо отримати last_name через get_chat()
+        # Якщо в таблиці немає імені — пробуємо отримати last_name через метод get_chat
         last_name = None
         if not first_name:
             try:
-                chat = await bot.get_chat(chat_id=int(user_id))
+                chat = await telegram_bot.get_chat(chat_id=int(telegram_id))
                 last_name = chat.last_name
             except Exception:
                 pass
 
-        # Визначаємо, на що замінювати {{firstName}}
-        name_to_insert = first_name or last_name or username or ""
+        # Формуємо ім’я для вставки
+        display_name = first_name or last_name or ""
 
-        # Персоналізуємо текст (якщо плейсхолдера немає — replace нічого не міняє)
-        personalized_text = broadcast_text.replace("{{firstName}}", name_to_insert)
+        # Персоналізація тексту
+        personalized_text = broadcast_template.replace("{{firstName}}", display_name)
 
         try:
-            sent_msg = await bot.send_message(
-                chat_id=user_id,
+            sent_message = await telegram_bot.send_message(
+                chat_id=int(telegram_id),
                 text=personalized_text,
                 parse_mode='HTML',
                 disable_web_page_preview=True
             )
-            results.append({
-                'Index':     index,
-                'User ID':   user_id,
-                'Message ID': sent_msg.message_id,
-                'Status':    'True'
+            send_results.append({
+                'Index':      row_index,
+                'User ID':    telegram_id,
+                'Message ID': sent_message.message_id,
+                'Status':     'True'
             })
-        except Exception as e:
-            logging.error(f"Не вдалося відправити повідомлення користувачу {user_id}: {e}")
-            results.append({
-                'Index':     index,
-                'User ID':   user_id,
+        except Exception as error:
+            logging.error(f"Не удалось отправить сообщение {telegram_id}: {error}")
+            send_results.append({
+                'Index':      row_index,
+                'User ID':    telegram_id,
                 'Message ID': None,
-                'Status':    'False'
+                'Status':     'False'
             })
 
-    # Зберігаємо результати у CSV та відправляємо адміну
-    file_path = 'broadcast_results.csv'
-    await save_results_to_csv(results, file_path)
-    document = FSInputFile(file_path)
+    # Зберігаємо результати у CSV-файл
+    csv_file_path = 'broadcast_results.csv'
+    with open(csv_file_path, 'w', newline='', encoding='utf-8') as csv_file:
+        fieldnames = ['Index', 'User ID', 'Message ID', 'Status']
+        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+        writer.writeheader()
+        for record in send_results:
+            writer.writerow(record)
+
+    # Відправляємо файл адміністратору
+    document = FSInputFile(csv_file_path)
     await message.answer_document(
-        document,
+        document=document,
         caption="Рассылка завершена. Результаты сохранены в broadcast_results.csv"
     )
 
 
+@dispatcher.message(F.text.lower() == "start")
+async def send_channel_invite(message: types.Message):
+    """Відправляє користувачу посилання на канал та зберігає його у таблицю."""
+    invite_text = (
+        "Ваша заявка одобрена!\n\n"
+        "Вступить в канал: https://t.me/+4ia_jp8_1kAwNWFi"
+    )
+    invite_button = InlineKeyboardButton(
+        text='ВСТУПИТЬ',
+        url='https://t.me/+4ia_jp8_1kAwNWFi'
+    )
+    inline_keyboard = InlineKeyboardMarkup(inline_keyboard=[[invite_button]])
 
-@dp.message(F.text.lower() == "start")
-async def send_channel_link(message: types.Message):
-        msg = "Ваша заявка одобрена!\n\nВступить в канал: https://t.me/+4ia_jp8_1kAwNWFi"
-        button = InlineKeyboardButton(text='ВСТУПИТЬ', url='https://t.me/+4ia_jp8_1kAwNWFi')
-        markup = InlineKeyboardMarkup(inline_keyboard=[[button]])
+    # Записуємо лише ID та ім'я користувача в таблицю
+    user_id = message.from_user.id
+    user_first_name = message.from_user.first_name or ""
+    values_body = {"values": [[user_id, user_first_name]]}
 
-        user_data = [message.from_user.id, message.from_user.username, message.from_user.first_name]
-        append_data_to_sheet(user_data, "1eam-jcAWOC54U6hoZmtmBcG4v7rzy--NtTHoZdDxLHA", "A:C")
+    credentials = Credentials.from_service_account_file("maxim.json")
+    sheets_service = build('sheets', 'v4', credentials=credentials).spreadsheets()
+    sheets_service.values().append(
+        spreadsheetId=SPREADSHEET_ID,
+        range=USER_DATA_RANGE,
+        valueInputOption="USER_ENTERED",
+        body=values_body
+    ).execute()
 
-        await message.answer(text=msg, reply_markup=markup, disable_web_page_preview=True)
-    
-    
-async def save_results_to_csv(results, file_path):
-    """Зберігає результати розсилки у CSV-файл."""
-    with open(file_path, 'w', newline='', encoding='utf-8') as csvfile:
-        fieldnames = ['Index', 'User ID', 'Message ID', 'Status']
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        writer.writeheader()
-        for result in results:
-            writer.writerow(result)
+    await message.answer(
+        text=invite_text,
+        reply_markup=inline_keyboard,
+        disable_web_page_preview=True
+    )
 
-def append_data_to_sheet(user_data, spreadsheet_id, range_name):
-    """Добавляет данные пользователя в Google таблицу."""
-    creds = Credentials.from_service_account_file("maxim.json")
-    service = build('sheets', 'v4', credentials=creds)
-    sheet = service.spreadsheets()
 
-    request = sheet.values().append(spreadsheetId=spreadsheet_id, 
-                                    range=range_name, 
-                                    valueInputOption="USER_ENTERED", 
-                                    body={"values": [user_data]})
-    response = request.execute()
-    return response
-
-async def start():
-    logging.basicConfig(level=logging.DEBUG,
-                    format="%(asctime)s - [%(levelname)s] - %(name)s -"
-                           "(%(filename)s.%(funcName)s(%(lineno)d) - %(message)s"
-                    )
-    dp.chat_join_request.register (approve_request, F.chat.id ==CHANNEL_ID)
+async def main():
+    """Запуск бота з обробкою заявок у канал."""
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format="%(asctime)s - [%(levelname)s] - %(name)s - "
+               "(%(filename)s:%(lineno)d) - %(message)s"
+    )
+    dispatcher.chat_join_request.register(
+        handle_chat_join_request,
+        F.chat.id == CHANNEL_ID
+    )
 
     try:
-     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
-    except Exception as ex:
-     logging.error( exc_info=True)
+        await dispatcher.start_polling(
+            bot=telegram_bot,
+            allowed_updates=dispatcher.resolve_used_update_types()
+        )
+    except Exception:
+        logging.error("Під час роботи бота сталася помилка", exc_info=True)
     finally:
-     await bot.session.close()
+        await telegram_bot.session.close()
 
 
 if __name__ == '__main__':
     with contextlib.suppress(KeyboardInterrupt, SystemExit):
-        asyncio.run(start())
-
-  
-
+        asyncio.run(main())
