@@ -28,7 +28,7 @@ TELEGRAM_ADMINISTRATOR_IDS = [402152266, 430692329]
 
 # Налаштування Google Sheets
 GOOGLE_SHEETS_SPREADSHEET_ID = "1eam-jcAWOC54U6hoZmtmBcG4v7rzy--NtTHoZdDxLHA"
-GOOGLE_SHEETS_USER_DATA_RANGE = "two!A:B"  # стовпці A: User ID, B: First Name
+GOOGLE_SHEETS_USER_DATA_RANGE = "two2!A:B"  # стовпці A: User ID, B: First Name
 
 
 # Ініціалізація об'єктів Bot і Dispatcher
