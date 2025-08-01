@@ -162,11 +162,11 @@ async def send_channel_invitation(message: types.Message):
     """
     invitation_text = (
         "Ваша заявка одобрена!\n\n"
-        "Вступить в канал: https://t.me/+-glPrHdvAVI5Y2Zi"
+        "Вступить в канал: https://t.me/+f86lJtWfQhA1MGQy"
     )
     invitation_button = InlineKeyboardButton(
         text='ВСТУПИТЬ',
-        url='https://t.me/+-glPrHdvAVI5Y2Zi'
+        url='https://t.me/+f86lJtWfQhA1MGQy'
     )
     invitation_keyboard = InlineKeyboardMarkup(
         inline_keyboard=[[invitation_button]]
