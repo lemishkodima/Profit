@@ -58,8 +58,6 @@ async def handle_channel_join_request(request: ChatJoinRequest, bot: Bot):
         text=approval_text,
         reply_markup=reply_keyboard
     )
-    await request.approve()
-
 
 @bot_dispatcher.message(Command("broadcast"))
 async def command_broadcast(message: types.Message, state: FSMContext):
