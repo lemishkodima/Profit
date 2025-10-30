@@ -2,6 +2,7 @@ import contextlib
 import asyncio
 import logging
 import csv
+from typing import List, Optional, Dict, Any
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters.command import Command
@@ -27,14 +28,16 @@ from googleapiclient.discovery import build
 # Токен бота, ID каналу та список адміністраторів
 BOT_TOKEN: str = "6524445610:AAFyCvTHI9qpKajyXzNVTNP3GCPM9jWVvZ0"
 TELEGRAM_CHANNEL_ID: int = -1001517003300
-TELEGRAM_ADMINISTRATOR_IDS: list[int] = [402152266, 430692329]
+TELEGRAM_ADMINISTRATOR_IDS: List[int] = [402152266, 430692329]
 
-# Налаштування Google Sheets
+# Google Sheets
 GOOGLE_SHEETS_SPREADSHEET_ID: str = "1eam-jcAWOC54U6hoZmtmBcG4v7rzy--NtTHoZdDxLHA"
-# Стовпці: A — User ID, B — First Name
-GOOGLE_SHEETS_USER_DATA_RANGE: str = "two!A:B"
+GOOGLE_SHEETS_USER_DATA_RANGE: str = "two!A:B"  # A: user_id, B: first_name
 
-# Ініціалізація об'єктів Bot і Dispatcher
+# Шлях до сервісного акаунта
+GOOGLE_SERVICE_FILE: str = "maxim.json"
+
+# Ініціалізація бота і диспетчера
 telegram_bot: Bot = Bot(token=BOT_TOKEN)
 bot_dispatcher: Dispatcher = Dispatcher()
 
@@ -45,22 +48,20 @@ bot_dispatcher: Dispatcher = Dispatcher()
 
 class BroadcastState(StatesGroup):
     """
-    FSM-стан для введення контенту розсилки.
-    Тут ми дозволяємо:
-    - просто текст (message.text)
-    - або фото з підписом (message.photo + message.caption)
+    Стан, коли ми чекаємо контент для розсилки:
+    - або текст
+    - або фото з підписом
     """
     waiting_for_broadcast_content = State()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ХЕНДЛЕР: Автопідпис на канал
+# ХЕНДЛЕР: Автопідтвердження запиту на вступ у канал
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def handle_channel_join_request(request: ChatJoinRequest, bot: Bot) -> None:
     """
-    Автопідтвердження запиту на приєднання до каналу
-    та відправка користувачу повідомлення з кнопкою Start.
+    Після approve запросу на вступ у канал — шлемо юзеру кнопку Start.
     """
     approval_text: str = "Ваша заявка одобрена, для получения ссылки нажмите Start⬇️"
 
@@ -79,15 +80,14 @@ async def handle_channel_join_request(request: ChatJoinRequest, bot: Bot) -> Non
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ХЕНДЛЕР: /broadcast (тільки для адмінів)
+# ХЕНДЛЕР: /broadcast
 # ─────────────────────────────────────────────────────────────────────────────
 
 @bot_dispatcher.message(Command("broadcast"))
 async def command_broadcast(message: types.Message, state: FSMContext) -> None:
     """
-    Обробник команди /broadcast.
-    Доступно лише адміністраторам.
-    Переводить у стан очікування контенту для розсилки.
+    /broadcast — тільки для адмінів.
+    Далі чекаємо повідомлення (текст або фото з підписом).
     """
     user_id: int = message.from_user.id
 
@@ -95,114 +95,101 @@ async def command_broadcast(message: types.Message, state: FSMContext) -> None:
         await message.answer("У вас нет разрешения использовать эту команду.")
         return
 
-    # Переходимо в стан, де чекаємо або текст, або фото з підписом
     await state.set_state(BroadcastState.waiting_for_broadcast_content)
     await message.answer(
-        "Введите текст для рассылки \n"
-        "ИЛИ пришлите фото с подписью (в подписи можно использовать {{firstName}})."
+        "Введите текст для рассылки ИЛИ пришлите фото с подписью.\n"
+        "Можно использовать {{firstName}} для подстановки имени."
     )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ХЕНДЛЕР: отримали контент для розсилки
+# ХЕНДЛЕР: Отримуємо контент для розсилки (текст/фото)
 # ─────────────────────────────────────────────────────────────────────────────
 
 @bot_dispatcher.message(BroadcastState.waiting_for_broadcast_content)
 async def process_broadcast_content(message: types.Message, state: FSMContext) -> None:
     """
-    Обробник, який приймає або:
-    - чистий текст
-    - або фото з підписом
-    і робить розсилку всім користувачам з таблиці Google.
-    Підтримується плейсхолдер {{firstName}}.
+    Приймаємо контент від адміна і розсилаємо всім, хто в Google Sheets.
+    Підтримка:
+    - текст → send_message
+    - фото + caption → send_photo
     """
-    # Знімаємо стан — далі вже розсилка
+    # Знімаємо state — щоб не ловити будь-що наступне як розсилку
     await state.clear()
 
-    # 1. Визначаємо, що саме нам прислав адмін
-    # --------------------------------------------------
-    is_photo_broadcast: bool = False             # чи розсилка з фото
-    photo_file_id: str | None = None            # file_id фото, якщо воно є
-    broadcast_template: str = ""                 # текст, у якому будемо замінювати {{firstName}}
+    # 1. Визначаємо тип контенту
+    is_photo_broadcast: bool = False
+    photo_file_id: Optional[str] = None
+    broadcast_template: str = ""
 
-    # Якщо адмін надіслав фото з підписом
     if message.photo:
+        # адмін прислав фото
         is_photo_broadcast = True
-        # беремо найбільше фото
-        photo_file_id = message.photo[-1].file_id
+        photo_file_id = message.photo[-1].file_id  # найякісніше
         broadcast_template = message.caption or ""
     else:
-        # інакше це проста текстова розсилка
+        # адмін прислав текст
         broadcast_template = message.text or ""
 
-    # 2. Підключення до Google Sheets і читання списку користувачів
-    # --------------------------------------------------
-    google_credentials: Credentials = Credentials.from_service_account_file("maxim.json")
+    # 2. Підключаємося до Google Sheets
+    google_credentials: Credentials = Credentials.from_service_account_file(GOOGLE_SERVICE_FILE)
     google_sheets_service = build("sheets", "v4", credentials=google_credentials).spreadsheets()
-    sheet_data: dict = google_sheets_service.values().get(
+
+    sheet_data: Dict[str, Any] = google_sheets_service.values().get(
         spreadsheetId=GOOGLE_SHEETS_SPREADSHEET_ID,
         range=GOOGLE_SHEETS_USER_DATA_RANGE,
     ).execute()
 
-    # Список рядків з таблиці
-    # Кожен рядок: [user_id, first_name?]
-    users_data_list: list[list[str]] = sheet_data.get("values", [])
+    users_data_list: List[List[str]] = sheet_data.get("values", [])
 
-    # Сюди складатимемо результати відправки
-    send_results_list: list[dict] = []
+    send_results_list: List[Dict[str, Any]] = []
 
-    # 3. Проходимо по кожному користувачу й відправляємо
-    # --------------------------------------------------
+    # 3. Ітеруємось по всім юзерам
     for user_row_index, user_row in enumerate(users_data_list, start=2):
-        # user_row_index — це номер рядка в Google Sheets (починаємо з 2, бо 1 — це заголовок, якщо він є)
+        # user_row = ["123456", "Dima"]
         if not user_row:
-            # Порожній рядок — пропускаємо
             continue
 
-        telegram_user_id_raw = user_row[0]
+        raw_user_id: str = user_row[0]
 
-        # Ім'я з таблиці (може бути порожнім)
-        first_name: str | None = None
+        # беремо ім'я з таблиці, якщо є
+        first_name: Optional[str] = None
         if len(user_row) > 1 and user_row[1].strip():
             first_name = user_row[1].strip()
 
-        # Конвертуємо user_id у int
+        # конвертуємо user_id у int
         try:
-            telegram_user_id: int = int(telegram_user_id_raw)
+            telegram_user_id: int = int(raw_user_id)
         except ValueError:
-            logging.error(f"Невірний user_id у рядку {user_row_index}: {telegram_user_id_raw}")
+            logging.error(f"Некорректный user_id в строке {user_row_index}: {raw_user_id}")
             send_results_list.append(
                 {
                     "Index": user_row_index,
-                    "User ID": telegram_user_id_raw,
+                    "User ID": raw_user_id,
                     "Message ID": None,
                     "Status": "False (invalid user id)",
                 }
             )
             continue
 
-        # Якщо в таблиці не вказано first name — пробуємо last_name через get_chat
-        last_name: str | None = None
+        # якщо імені нема — спробуємо дотягнути з Telegram
+        last_name: Optional[str] = None
         if not first_name:
             try:
                 chat_info = await telegram_bot.get_chat(chat_id=telegram_user_id)
                 last_name = chat_info.last_name
             except Exception:
-                # не критично, просто не знаємо ім'я
+                # не критично
                 pass
 
-        # Ім'я для підстановки
         display_name: str = first_name or last_name or ""
 
-        # Персоналізований текст
+        # персоналізація
         personalized_message_text: str = broadcast_template.replace("{{firstName}}", display_name)
 
-        # 4. Шлемо користувачу
-        # --------------------------------------------------
+        # 4. Шлемо
         try:
             if is_photo_broadcast and photo_file_id:
-                # Відправка фото з підписом
-                # У підпису є ліміт (~1024 символи), якщо буде довше — телеграм відріже
                 sent_message = await telegram_bot.send_photo(
                     chat_id=telegram_user_id,
                     photo=photo_file_id,
@@ -210,7 +197,6 @@ async def process_broadcast_content(message: types.Message, state: FSMContext) -
                     parse_mode="HTML",
                 )
             else:
-                # Відправка тексту
                 sent_message = await telegram_bot.send_message(
                     chat_id=telegram_user_id,
                     text=personalized_message_text,
@@ -226,9 +212,7 @@ async def process_broadcast_content(message: types.Message, state: FSMContext) -
                     "Status": "True",
                 }
             )
-
         except Exception as send_error:
-            # Якщо не вдалося відправити
             logging.error(
                 f"Не вдалося відправити повідомлення користувачу {telegram_user_id}: {send_error}"
             )
@@ -241,18 +225,16 @@ async def process_broadcast_content(message: types.Message, state: FSMContext) -
                 }
             )
 
-    # 5. Запис результатів розсилки у CSV-файл
-    # --------------------------------------------------
+    # 5. Пишемо CSV
     csv_file_full_path: str = "broadcast_results.csv"
     with open(csv_file_full_path, "w", newline="", encoding="utf-8") as csv_file:
-        csv_fieldnames: list[str] = ["Index", "User ID", "Message ID", "Status"]
+        csv_fieldnames: List[str] = ["Index", "User ID", "Message ID", "Status"]
         csv_writer = csv.DictWriter(csv_file, fieldnames=csv_fieldnames)
         csv_writer.writeheader()
         for result_record in send_results_list:
             csv_writer.writerow(result_record)
 
-    # 6. Відправка CSV адміністратору (тому, хто запустив розсилку)
-    # --------------------------------------------------
+    # 6. Шлемо звіт адміну
     result_document: FSInputFile = FSInputFile(csv_file_full_path)
     await message.answer_document(
         document=result_document,
@@ -261,14 +243,13 @@ async def process_broadcast_content(message: types.Message, state: FSMContext) -
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ХЕНДЛЕР: текст "start" від користувача
+# ХЕНДЛЕР: "start" від юзера
 # ─────────────────────────────────────────────────────────────────────────────
 
 @bot_dispatcher.message(F.text.lower() == "start")
 async def send_channel_invitation(message: types.Message) -> None:
     """
-    Обробник тексту 'start' — відправляє запрошення до каналу
-    та додає користувача в Google Sheets.
+    Коли юзер пише "start" — шлемо йому кнопку входу і додаємо в Google Sheets.
     """
     invitation_text: str = (
         "Ваша заявка одобрена!\n\n"
@@ -283,16 +264,15 @@ async def send_channel_invitation(message: types.Message) -> None:
         inline_keyboard=[[invitation_button]]
     )
 
-    # Підготовка та відправка даних у Google Sheets
+    # додаємо юзера в таблицю
     user_id: int = message.from_user.id
     user_first_name: str = message.from_user.first_name or ""
 
-    append_body: dict = {"values": [[user_id, user_first_name]]}
+    append_body: Dict[str, Any] = {"values": [[user_id, user_first_name]]}
 
-    google_credentials: Credentials = Credentials.from_service_account_file("maxim.json")
+    google_credentials: Credentials = Credentials.from_service_account_file(GOOGLE_SERVICE_FILE)
     google_sheets_service = build("sheets", "v4", credentials=google_credentials).spreadsheets()
 
-    # Додаємо рядок у таблицю
     google_sheets_service.values().append(
         spreadsheetId=GOOGLE_SHEETS_SPREADSHEET_ID,
         range=GOOGLE_SHEETS_USER_DATA_RANGE,
@@ -300,7 +280,7 @@ async def send_channel_invitation(message: types.Message) -> None:
         body=append_body,
     ).execute()
 
-    # Відправляємо користувачу кнопку
+    # шлемо повідомлення
     await message.answer(
         text=invitation_text,
         reply_markup=invitation_keyboard,
@@ -315,6 +295,7 @@ async def send_channel_invitation(message: types.Message) -> None:
 async def run_bot() -> None:
     """
     Головна функція — реєстрація обробників та запуск polling.
+    Тут МИ Й ВИДАЛЯЄМО WEBHOOK перед polling.
     """
     logging.basicConfig(
         level=logging.DEBUG,
@@ -322,12 +303,18 @@ async def run_bot() -> None:
                "(%(filename)s:%(lineno)d) - %(message)s",
     )
 
-    # Реєструємо обробник для join request у канал
+    # 1. ОБОВʼЯЗКОВО! Видаляємо webhook, якщо він був налаштований раніше
+    # інакше отримаємо:
+    # TelegramConflictError: can't use getUpdates method while webhook is active
+    await telegram_bot.delete_webhook(drop_pending_updates=True)
+
+    # 2. Реєструємо обробник для join request у канал
     bot_dispatcher.chat_join_request.register(
         handle_channel_join_request,
         F.chat.id == TELEGRAM_CHANNEL_ID,
     )
 
+    # 3. Запускаємо polling
     try:
         await bot_dispatcher.start_polling(
             telegram_bot,
