@@ -63,7 +63,12 @@ async def handle_channel_join_request(request: ChatJoinRequest, bot: Bot) -> Non
     """
     Після approve запросу на вступ у канал — шлемо юзеру кнопку Start.
     """
+    await bot.approve_chat_join_request(
+        chat_id=request.chat.id,
+        user_id=request.from_user.id,
+    )
     approval_text: str = "Ваша заявка одобрена, для получения ссылки нажмите Start⬇️"
+    
 
     start_button: KeyboardButton = KeyboardButton(text="Start")
     reply_keyboard: ReplyKeyboardMarkup = ReplyKeyboardMarkup(
